@@ -147,4 +147,20 @@ public class CustomFunctionTest {
     Object evaluate = expression.evaluate(answer);
     Assertions.assertEquals(answer, evaluate);
   }
+
+  @Test
+  public void testEachEmptyArray() {
+    var expression = Jsonata.jsonata("[] ~> $each(?, function($v) { $v })");
+    Object evaluate = expression.evaluate("{}");
+    Assertions.assertNull(evaluate);
+  }
+
+  @Test
+  public void testEachArrayWithData() {
+    var expression = Jsonata.jsonata("[123, 321] ~> $each(?, function($v) { $v })");
+    Object evaluate = expression.evaluate("{}");
+    Assertions.assertInstanceOf(List.class, evaluate);
+    List<Integer> expected = List.of(123, 321);
+    Assertions.assertEquals(expected, evaluate);
+  }
 }

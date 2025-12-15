@@ -57,7 +57,7 @@ import org.slf4j.LoggerFactory;
 public class Jsonata {
 
     private static final Logger log = LoggerFactory.getLogger(Jsonata.class);
- 
+
      // Start of Evaluator code
  
     public static interface EntryCallback {
@@ -136,7 +136,7 @@ public class Jsonata {
         // Make sure each evaluate is executed on an instance per thread
         Jsonata _this = getPerThreadInstance();
         // Save and restore the evaluation context so that nested
-        // evaluations (e.g. $eval()) see the correct context.        
+        // evaluations (e.g. $eval()) see the correct context.
         Object _input = _this.input;
         Frame _environment = _this.environment;
         try {
@@ -1555,6 +1555,13 @@ public class Jsonata {
                 List args = new ArrayList<>(); args.add(lhs); args.add(func); // == [lhs, func]
                 result = /* await */ apply(chain, args, null, environment);
             } else {
+                if (lhs instanceof List && "partial".equals(expr.rhs.type)) {
+                    var tempLhs = (List)lhs;
+                    lhs = new HashMap();
+                    for (int i = 0; i < tempLhs.size(); i++) {
+                        ((HashMap) lhs).put(i, tempLhs.get(i));
+                    }
+                }
                 List args = new ArrayList<>(); args.add(lhs); // == [lhs]
                 result = /* await */ apply(func, args, null, environment);
             }
@@ -1818,7 +1825,7 @@ public class Jsonata {
             return null;
         }
     }
- 
+
      /**
       * Evaluate lambda against input data
       * @param {Object} expr - JSONata expression
@@ -2611,16 +2618,16 @@ public class Jsonata {
      * Enable or disable output {@link Jsonata#NULL_VALUE} conversion.
      * Enabled by default, which returns both "Jsonata null" and "Jsonata undefined"
      * as Java null.
-     * 
+     *
      * When disabled, output values might contain
      * <ul>
      *  <li>{@link Jsonata#NULL_VALUE} indicating "Jsonata null"
      *  <li>Java null indicating "Jsonata undefined"
      * </ul>
-     * 
+     *
      * Manually calling {@link Utils#convertNulls(Object)}
      * on a raw result without output conversion will yield the converted result.
-     * 
+     *
      * @param outputConvertNulls
      */
     public void setOutputConvertNulls(boolean outputConvertNulls) {
