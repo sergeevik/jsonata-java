@@ -1853,15 +1853,25 @@ public class Functions {
      * @throws Throwable
      * @returns {Array} - the resultant array
      */
-    public static List each(Map obj, Object func) throws Throwable {
+    public static List each(Object obj, Object func) throws Throwable {
         if (obj==null) {
             return null;
         }
-
+        Map iterateMap;
+        if (obj instanceof List) {
+            var objList = (List) obj;
+            iterateMap = new LinkedHashMap();
+            for (int i = 0; i < objList.size(); i++) {
+                iterateMap.put(i, objList.get(i));
+            }
+        } else if (obj instanceof Map) {
+            iterateMap = (Map)obj;
+        } else {
+            throw new RuntimeException();
+        }
         var result = Utils.createSequence();
-
-        for (var key : obj.keySet()) {
-            var func_args = hofFuncArgs(func, obj.get(key), key, obj);
+        for (var key : iterateMap.keySet()) {
+            var func_args = hofFuncArgs(func, iterateMap.get(key), key, obj);
             // invoke func
             var val = funcApply(func, func_args);
             if(val != null) {

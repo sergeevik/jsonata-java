@@ -2310,7 +2310,7 @@ public class Jsonata {
         defineFunction("spread", "<x-:a<o>>");
         defineFunction("merge", "<a<o>:o>");
         defineFunction("reverse", "<a:a>");
-        defineFunction("each", "<o-f:a>");
+        defineFunction("each", "<(oa)-f:a>");
         defineFunction("error", "<s?:x>");
         defineFunction("assert", "<bs?:x>", "assertFn");
         defineFunction("type", "<x:s>");
