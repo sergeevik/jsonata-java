@@ -175,4 +175,18 @@ public class CustomFunctionTest {
     Assertions.assertInstanceOf(List.class, evaluate);
     Assertions.assertEquals(answer, evaluate);
   }
+
+  @Test
+  public void testEvalDeep() {
+    Object input = Json.parseJson("{" +
+            "  \"funcs\": {" +
+            "    \"func\": \"$.a + $.b\"" +
+            "  }," +
+            "  \"a\": 3," +
+            "  \"b\": 4" +
+            "}");
+    var expression = Jsonata.jsonata("$eval($.funcs.func)");
+    Object evaluate = expression.evaluate(input);
+    Assertions.assertEquals(7, evaluate);
+  }
 }

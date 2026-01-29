@@ -246,6 +246,7 @@ public class Jsonata {
     * @returns {*} Evaluated input data
     */
     /* async */ Object evaluatePath(Symbol expr, Object input, Frame environment) {
+        Object previousInput = Jsonata.current.get().input;
         List inputSequence;
         // expr is an array of steps
         // if the first step is a variable reference ($...), including root reference ($$),
@@ -318,7 +319,7 @@ public class Jsonata {
         if (expr.group != null) {
             resultSequence = /* await */ evaluateGroupExpression(expr.group, isTupleStream ? tupleBindings : resultSequence, environment);
         }
-
+        Jsonata.current.get().input = previousInput;
         return resultSequence;
     }
  
