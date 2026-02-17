@@ -37,6 +37,7 @@ import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -1628,7 +1629,7 @@ public class Jsonata {
              }
          }
          // apply the procedure
-         var procName = expr.procedure.type == "path" ? expr.procedure.steps.get(0).value : expr.procedure.value;
+         var procName = "path".equals(expr.procedure.type) ? expr.procedure.steps.get(0).value : expr.procedure.value;
 
         // Error if proc is null
         if (proc==null)
@@ -1755,9 +1756,9 @@ public class Jsonata {
                 List _res = new ArrayList<>();
                 for (String s : (List<String>)validatedArgs) {
                 //System.err.println("PAT "+proc+" input "+s);
-                    if (((Pattern)proc).matcher(s).find()) {
-                        //System.err.println("MATCH");
-                        _res.add(s);
+                    if (s != null) {
+                        Matcher matcher = ((Pattern) proc).matcher(s);
+                        _res.add(regexClosure(matcher));
                     }
                 }
                 result = _res;
@@ -1779,6 +1780,21 @@ public class Jsonata {
          }
          return result;
      }
+
+    private static Map regexClosure(Matcher matcher) {
+        if (matcher.find()) {
+            String group = matcher.group();
+            return Map.of(
+                    "match", group,
+                    "start", matcher.start(),
+                    "end", matcher.end(),
+                    "groups", List.of(group),
+                    "next", (Fn0<Map>) () -> regexClosure(matcher)
+            );
+        } else {
+            return null;
+        }
+    }
  
      /**
       * Evaluate lambda against input data
