@@ -649,6 +649,7 @@ public class Functions {
         String match;
         int index;
         List<String> groups;
+        Jsonata.Fn0<Map> next;
         @Override public String toString() {
             return "regexpMatch "+match+" idx="+index+" groups="+groups;
         }
@@ -661,6 +662,34 @@ public class Functions {
      * @returns {object} - structure that represents the match(es)
      */
     public static List<RegexpMatch> evaluateMatcher(Pattern matcher, String str) {
+        List<RegexpMatch> res = new ArrayList<>();
+        Matcher m = matcher.matcher(str);
+        while (m.find()) {
+            RegexpMatch rm = new RegexpMatch();
+
+            //System.out.println("grc="+m.groupCount()+" "+m.group(1));
+
+            rm.index = m.start();
+            rm.match = m.group();
+
+            List<String> groups = new ArrayList<>();
+            // Collect the groups
+            for (int g=1; g<=m.groupCount(); g++)
+                groups.add(m.group(g));
+
+            rm.groups = groups;
+            res.add(rm);
+        }
+        return res;
+    }
+    /**
+     * Evaluate the matcher function against the str arg
+     *
+     * @param {*} matcher - matching function (native or lambda)
+     * @param {string} str - the string to match against
+     * @returns {object} - structure that represents the match(es)
+     */
+    public static List<RegexpMatch> evaluateMatcher(JFunction matcher, String str) {
         List<RegexpMatch> res = new ArrayList<>();
         Matcher m = matcher.matcher(str);
         while (m.find()) {
@@ -1066,7 +1095,7 @@ public class Functions {
         return URLDecoder.decode(str, StandardCharsets.UTF_8);
     }
 
-    public static List<String> split(String str, Object pattern, Number limit) {
+    public static List<String> split(String str, Object pattern, Number limit) throws Throwable {
         if (str==null )
             return null;
 
@@ -1089,6 +1118,20 @@ public class Functions {
                 // Quote separator string + preserve trailing empty strings (-1)
                 result = Arrays.asList( str.split( Pattern.quote(sep), -1) );
             }
+        } else if (pattern instanceof JFunction) {
+            Map<String, Object> regexResult = (Map<String, Object>)((JFunction) pattern).function.call(null, List.of(str));
+            ArrayList<String> strings = new ArrayList<>();
+            Integer start = 0;
+            while (regexResult != null) {
+                Integer matchStart = (Integer)regexResult.get("start");
+                Integer matchEnd = (Integer)regexResult.get("end");
+                strings.add(str.substring(start, matchStart));
+                start = matchEnd;
+                Jsonata.Fn0<Map> next = (Jsonata.Fn0<Map>) regexResult.get("next");
+                regexResult = (Map<String, Object>)next.getJFunctionCallable().call(null, null);
+            }
+            strings.add(str.substring(start));
+            result = strings;
         } else {
             result = Arrays.asList( ((Pattern)pattern).split(str, -1) );
         }

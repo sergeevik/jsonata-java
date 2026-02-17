@@ -40,7 +40,7 @@ public class RegexTest {
         );
         // TODO: why there evaluate return list but next test return map (object). In js always return object
         //    maybe problem in braces, but on try.jsonata always return object
-        Map<String, Object> evaluate = (Map<String, Object>)(((List)expression.evaluate(data)).get(0));
+        Map<String, Object> evaluate = (Map<String, Object>) expression.evaluate(data);
         Assertions.assertEquals("domain1.", evaluate.get("match"));
         Assertions.assertEquals(0, evaluate.get("start"));
         Assertions.assertEquals(8, evaluate.get("end"));

@@ -1270,8 +1270,33 @@ public class Jsonata {
      Object evaluateRegex(Symbol expr) {
         // Note: in Java we just use the compiled regex Pattern
         // The apply functions need to take care to evaluate
-        return expr.value;
+         Pattern value = (Pattern) expr.value;
+         JFunctionCallable evaluateRegex = (_input, args) -> {
+             for (String s : (List<String>)args) {
+                 if (s != null) {
+                     Matcher matcher = value.matcher(s);
+                     return regexClosure(matcher);
+                 }
+             }
+             return null;
+         };
+         return new JFunction(evaluateRegex, null);
      }
+
+    private static Map regexClosure(Matcher matcher) {
+        if (matcher.find()) {
+            String group = matcher.group();
+            return Map.of(
+                    "match", group,
+                    "start", matcher.start(),
+                    "end", matcher.end(),
+                    "groups", List.of(group),
+                    "next", (Fn0<Map>) () -> regexClosure(matcher)
+            );
+        } else {
+            return null;
+        }
+    }
  
      /**
       * Evaluate variable against input data
@@ -1752,16 +1777,6 @@ public class Jsonata {
                 } else if (proc instanceof Fn2) {
                     result = ((Fn2)proc).apply(_args.size() <= 0 ? null : _args.get(0), _args.size() <= 1 ? null :_args.get(1));
                 }
-             } else if (proc instanceof Pattern) {
-                List _res = new ArrayList<>();
-                for (String s : (List<String>)validatedArgs) {
-                //System.err.println("PAT "+proc+" input "+s);
-                    if (s != null) {
-                        Matcher matcher = ((Pattern) proc).matcher(s);
-                        _res.add(regexClosure(matcher));
-                    }
-                }
-                result = _res;
              } else {
                 System.out.println("Proc not found "+proc);
                  throw new JException(
@@ -1780,21 +1795,6 @@ public class Jsonata {
          }
          return result;
      }
-
-    private static Map regexClosure(Matcher matcher) {
-        if (matcher.find()) {
-            String group = matcher.group();
-            return Map.of(
-                    "match", group,
-                    "start", matcher.start(),
-                    "end", matcher.end(),
-                    "groups", List.of(group),
-                    "next", (Fn0<Map>) () -> regexClosure(matcher)
-            );
-        } else {
-            return null;
-        }
-    }
  
      /**
       * Evaluate lambda against input data
@@ -2184,7 +2184,7 @@ public class Jsonata {
      * JFunction callable Lambda interface
      */
     public static interface JFunctionCallable {
-        Object call(Object input, List args) throws Throwable;
+        Object  call(Object input, List args) throws Throwable;
     }
 
     public static interface JFunctionSignatureValidation {
