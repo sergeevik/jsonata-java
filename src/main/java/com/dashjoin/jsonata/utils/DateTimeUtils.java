@@ -174,9 +174,9 @@ public class DateTimeUtils implements Serializable {
             wordValuesLong.put(lword + "th", val);
         }
     }
-
+    private static final Pattern SPLIT_PATTERN = Pattern.compile(",\\s|\\sand\\s|[\\s\\-]");
     public static int wordsToNumber(String text) {
-        String[] parts = text.split(",\\s|\\sand\\s|[\\s\\-]");
+        String[] parts = SPLIT_PATTERN.split(text);
         Integer[] values = new Integer[parts.length];
         for (int i = 0; i < parts.length; i++) {
             values[i] = wordValues.get(parts[i]);
@@ -202,7 +202,7 @@ public class DateTimeUtils implements Serializable {
      * long version of above
      */
     public static long wordsToLong(String text) {
-      String[] parts = text.split(",\\s|\\sand\\s|[\\s\\-]");
+      String[] parts = SPLIT_PATTERN.split(text);
       Long[] values = new Long[parts.length];
       for (int i = 0; i < parts.length; i++) {
           values[i] = wordValuesLong.get(parts[i]);
@@ -395,7 +395,7 @@ public class DateTimeUtils implements Serializable {
                 }
                 break;
             case DECIMAL:
-                formattedInteger = "" + value;
+                formattedInteger = String.valueOf(value);
                 int padLength = format.mandatoryDigits - formattedInteger.length();
                 if (padLength > 0) {
                     formattedInteger = Functions.leftPad(formattedInteger, format.mandatoryDigits, "0");
@@ -405,7 +405,7 @@ public class DateTimeUtils implements Serializable {
                     for (int i = 0; i < chars.length; i++) {
                         chars[i] = (char) (chars[i] + format.zeroCode - 0x30);
                     }
-                    formattedInteger = new String(chars);
+                    formattedInteger = String.valueOf(chars);
                 }
                 if (format.regular) {
                     int n = (formattedInteger.length() - 1) / format.groupingSeparators.elementAt(0).position;
@@ -788,16 +788,15 @@ public class DateTimeUtils implements Serializable {
 
         int offsetMillis = (60 * offsetHours + offsetMinutes) * 60 * 1000;
         LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis + offsetMillis), ZoneOffset.UTC);
-        String result = "";
+        StringBuilder resultBuilder = new StringBuilder();
         for (SpecPart part : formatSpec.parts) {
             if (part.type.equals("literal")) {
-                result += part.value;
+                resultBuilder.append(part.value);
             } else {
-                result += formatComponent(dateTime, part, offsetHours, offsetMinutes);
+                resultBuilder.append(formatComponent(dateTime, part, offsetHours, offsetMinutes));
             }
         }
-
-        return result;
+        return resultBuilder.toString();
     }
 
     private static String formatComponent(LocalDateTime date, SpecPart markerSpec, int offsetHours, int offsetMinutes) {
@@ -806,7 +805,7 @@ public class DateTimeUtils implements Serializable {
         if ("YMDdFWwXxHhms".indexOf(markerSpec.component) != -1) {
             if (markerSpec.component == 'Y') {
                 if (markerSpec.n != -1) {
-                    componentValue = "" + (int) (Integer.parseInt(componentValue) % Math.pow(10, markerSpec.n));
+                    componentValue = String.valueOf((int) (Integer.parseInt(componentValue) % Math.pow(10, markerSpec.n)));
                 }
             }
             if (markerSpec.names != null) {
@@ -871,35 +870,35 @@ public class DateTimeUtils implements Serializable {
         String componentValue = "";
         switch (component) {
             case 'Y': // year
-                componentValue = "" + date.getYear();
+                componentValue = String.valueOf(date.getYear());
                 break;
             case 'M': // month in year
-                componentValue = "" + date.getMonthValue();
+                componentValue = String.valueOf(date.getMonthValue());
                 break;
             case 'D': // day in month
-                componentValue = "" + date.getDayOfMonth();
+                componentValue = String.valueOf(date.getDayOfMonth());
                 break;
             case 'd': // day in year
-                componentValue = "" + date.getDayOfYear();
+                componentValue = String.valueOf(date.getDayOfYear());
                 break;
             case 'F': // day of week
-                componentValue = "" + date.getDayOfWeek().getValue();
+                componentValue = String.valueOf(date.getDayOfWeek().getValue());
                 break;
             case 'W': // week in year
-                componentValue = "" + date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+                componentValue = String.valueOf(date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR));
                 break;
             case 'w': // week in month
-                componentValue = "" + date.get(WeekFields.ISO.weekOfMonth());
+                componentValue = String.valueOf(date.get(WeekFields.ISO.weekOfMonth()));
                 break;
             case 'X':
                 //TODO work these out once others verified
-                componentValue = "" + date.getYear();
+                componentValue = String.valueOf(date.getYear());
                 break;
             case 'x':
-                componentValue = "" + date.getMonthValue();
+                componentValue = String.valueOf(date.getMonthValue());
                 break;
             case 'H': // hour in day (24 hours)
-                componentValue = "" + date.getHour();
+                componentValue = String.valueOf(date.getHour());
                 break;
             case 'h': //hour in day (12 hours)
                 int hour = date.getHour();
@@ -908,19 +907,19 @@ public class DateTimeUtils implements Serializable {
                 } else if (hour == 0) {
                     hour = 12;
                 }
-                componentValue = "" + hour;
+                componentValue = String.valueOf(hour);
                 break;
             case 'P':
                 componentValue = date.getHour() < 12 ? "am" : "pm";
                 break;
             case 'm':
-                componentValue = "" + date.getMinute();
+                componentValue = String.valueOf(date.getMinute());
                 break;
             case 's':
-                componentValue = "" + date.getSecond();
+                componentValue = String.valueOf(date.getSecond());
                 break;
             case 'f':
-                componentValue = "" + (date.getNano() / 1000000);
+                componentValue = String.valueOf((date.getNano() / 1000000));
                 break;
             case 'Z':
             case 'z':
@@ -938,11 +937,12 @@ public class DateTimeUtils implements Serializable {
     public static Long parseDateTime(String timestamp, String picture) {
         PictureFormat formatSpec = analyseDateTimePicture(picture);
         PictureMatcher matchSpec = generateRegex(formatSpec);
-        String fullRegex = "^";
+        StringBuilder fullRegexBuilder = new StringBuilder("^");
         for (MatcherPart part : matchSpec.parts) {
-            fullRegex += "(" + part.regex + ")";
+            fullRegexBuilder.append("(").append(part.regex).append(")");
         }
-        fullRegex += "$";
+        fullRegexBuilder.append("$");
+        String fullRegex = fullRegexBuilder.toString();
         Pattern pattern = Pattern.compile(fullRegex, Pattern.CASE_INSENSITIVE);
         Matcher matcher = pattern.matcher(timestamp);
         if (matcher.find()) {
@@ -1060,13 +1060,13 @@ public class DateTimeUtils implements Serializable {
         return ((~type & mask) == 0) && (type & mask) != 0;
     }
 
+    private static final Pattern LITERAL_ESCAPE_PATTERN = Pattern.compile("[.*+?^${}()|\\[\\]\\\\]");
     private static PictureMatcher generateRegex(PictureFormat formatSpec) {
         PictureMatcher matcher = new PictureMatcher();
         for (final SpecPart part : formatSpec.parts) {
             MatcherPart res;
             if (part.type.equals("literal")) {
-                Pattern p = Pattern.compile("[.*+?^${}()|\\[\\]\\\\]");
-                Matcher m = p.matcher(part.value);
+                Matcher m = LITERAL_ESCAPE_PATTERN.matcher(part.value);
 
                 String regex = m.replaceAll("\\\\$0");
                 res = new MatcherPart(regex) {

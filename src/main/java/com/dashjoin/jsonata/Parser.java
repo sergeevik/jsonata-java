@@ -295,7 +295,7 @@ public class Parser {
                     symbol = symbolTable.get("(name)");
                     break;
                 case "operator":
-                    symbol = symbolTable.get(""+value);
+                    symbol = symbolTable.get(String.valueOf(value));
                     if (symbol==null) {
                         return handleError(new JException(
                             "S0204", next_token.position, value));
@@ -590,7 +590,7 @@ public class Parser {
                 // is the next token a '<' - if so, parse the function signature
                 if (node.id.equals("<")) {
                     int depth = 1;
-                    String sig = "<";
+                    StringBuilder sigBuilder = new StringBuilder("<");
                     while (depth > 0 && !node.id.equals("{") && !node.id.equals("(end)")) {
                         Symbol tok = advance();
                         if (tok.id.equals(">")) {
@@ -598,9 +598,10 @@ public class Parser {
                         } else if (tok.id.equals("<")) {
                             depth++;
                         }
-                        sig += tok.value;
+                        sigBuilder.append(tok.value);
                     }
                     advance(">");
+                    String sig = sigBuilder.toString();
                     this.signature = new Signature(sig, "lambda");
                 }
                 // parse the function body
@@ -978,7 +979,7 @@ public class Parser {
         if (dbg) System.out.println(" > processAST type="+expr.type+" value='"+expr.value+"'");
         switch (expr.type != null ? expr.type : "(null)") {
             case "binary": {
-                switch (""+expr.value) {
+                switch (String.valueOf(expr.value)) {
                     case ".":
                         var lstep = processAST(((Infix)expr).lhs);
 
@@ -1039,12 +1040,12 @@ public class Parser {
                         }
                         // if first step is a path constructor, flag it for special handling
                         var firststep = result.steps.get(0);
-                        if (firststep.type.equals("unary") && (""+firststep.value).equals("[")) {
+                        if (firststep.type.equals("unary") && (String.valueOf(firststep.value)).equals("[")) {
                             firststep.consarray = true;
                         }
                         // if the last step is an array constructor, flag it so it doesn't flatten
                         var laststep = result.steps.get(result.steps.size() - 1);
-                        if (laststep.type.equals("unary") && (""+laststep.value).equals("[")) {
+                        if (laststep.type.equals("unary") && (String.valueOf(laststep.value)).equals("[")) {
                             laststep.consarray = true;
                         }
                         resolveAncestry(result);
@@ -1228,7 +1229,7 @@ public class Parser {
                 result = new Symbol();
                 result.type = expr.type; result.value = expr.value; result.position = expr.position;
                 // expr.value might be Character!
-                String exprValue = ""+expr.value;
+                String exprValue = String.valueOf(expr.value);
                 if (exprValue.equals("[")) {
                     if (dbg) System.out.println("unary [ "+result);
                     // array constructor - process each item
@@ -1354,7 +1355,7 @@ public class Parser {
                 if (expr.value.equals("and") || expr.value.equals("or") || expr.value.equals("in")) {
                     expr.type = "name";
                     result = processAST(expr);
-                } else /* istanbul ignore else */ if ((""+expr.value).equals("?")) {
+                } else /* istanbul ignore else */ if ((String.valueOf(expr.value)).equals("?")) {
                     // partial application
                     result = expr;
                 } else {

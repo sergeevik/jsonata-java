@@ -555,7 +555,7 @@ public class Jsonata {
     Infix expr = (Infix)_expr;
         Object result = null;
         var lhs = /* await */ evaluate(expr.lhs, input, environment);
-        String op = ""+expr.value;
+        String op = String.valueOf(expr.value);
 
         if (op.equals("and") || op.equals("or")) {
 
@@ -629,7 +629,7 @@ public class Jsonata {
     /* async */ Object evaluateUnary(Symbol expr, Object input, Frame environment) {
         Object result = null;
 
-        switch ((String)""+expr.value) { // Uli was: expr.value - where is value set???
+        switch (String.valueOf(expr.value)) { // Uli was: expr.value - where is value set???
             case "-":
                 result = /* await */ evaluate(expr.expression, input, environment);
                 if (result==null) { //(typeof result === "undefined") {
@@ -654,7 +654,7 @@ public class Jsonata {
                 environment.isParallelCall = idx > 0;
                 Object value = evaluate(item, input, environment);
                 if (value!=null) {
-                    if ((""+item.value).equals("["))
+                    if ((String.valueOf(item.value)).equals("["))
                         ((List)result).add(value);
                     else
                         result = Functions.append(result, value);
@@ -1221,7 +1221,7 @@ public class Jsonata {
         // The RHS is the expression to evaluate
         // The LHS is the name of the variable to bind to - should be a VARIABLE token (enforced by parser)
         var value = /* await */ evaluate(expr.rhs, input, environment);
-        environment.bind(""+expr.lhs.value, value);
+        environment.bind(String.valueOf(expr.lhs.value), value);
         return value;
     }
  
@@ -1918,7 +1918,7 @@ public class Jsonata {
         var env = createFrame(proc.environment);
         for (int i=0; i<proc.arguments.size(); i++) {
             if (i>=args.size()) break;
-            env.bind(""+proc.arguments.get(i).value, args.get(i));
+            env.bind(String.valueOf(proc.arguments.get(i).value), args.get(i));
         }
         if (proc.body instanceof Symbol) {
             result = evaluate(proc.body, proc.input, env);

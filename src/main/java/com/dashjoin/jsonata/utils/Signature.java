@@ -181,33 +181,33 @@ public class Signature implements Serializable {
                 case 'l': // not so sure about expecting null?
                 case 'o': { // object
                     _param.regex = ( "[" + symbol + "m]");
-                    _param.type = ( ""+symbol);
+                    _param.type = ( String.valueOf(symbol));
                     next();
                     break;
                 }
                 case 'a': { // array
                     // normally treat any value as singleton array
                     _param.regex = ( "[asnblfom]");
-                    _param.type = ( ""+symbol);
+                    _param.type = ( String.valueOf(symbol));
                     _param.array = ( true);
                     next();
                     break;
                 }
                 case 'f': { // function
                     _param.regex = ( "f");
-                    _param.type = ( ""+symbol);
+                    _param.type = ( String.valueOf(symbol));
                     next();
                     break;
                 }
                 case 'j': { // any JSON type
                     _param.regex = ( "[asnblom]");
-                    _param.type = ( ""+symbol);
+                    _param.type = ( String.valueOf(symbol));
                     next();
                     break;
                 }
                 case 'x': { // any type
                     _param.regex = ( "[asnblfom]");
-                    _param.type = ( ""+symbol);
+                    _param.type = ( String.valueOf(symbol));
                     next();
                     break;
                 }
@@ -225,7 +225,7 @@ public class Signature implements Serializable {
                     // search forward for matching ')'
                     int endParen = findClosingBracket(signature, position, '(', ')');
                     String choice = signature.substring(position + 1, endParen);
-                    if (choice.indexOf("<") == -1) {
+                    if (!choice.contains("<")) {
                         // no _parameterized types, simple regex
                         _param.regex = ( "[" + choice + "m]");
                     } else {
@@ -298,12 +298,12 @@ public class Signature implements Serializable {
     @SuppressWarnings({"rawtypes", "unchecked"})
     public Object validate(Object _args, Object context) {
 
-        var result = new ArrayList<>();
-
         var args = (List)_args;
-        String suppliedSig = "";
-        for (Object arg : args)
-            suppliedSig += getSymbol(arg);
+        StringBuilder sigBuilder = new StringBuilder(args.size());
+        for (Object arg : args) {
+            sigBuilder.append(getSymbol(arg));
+        }
+        String suppliedSig = sigBuilder.toString();
         
         Matcher isValid = _regex.matcher(suppliedSig);
         if (isValid != null && isValid.matches()) {
@@ -355,7 +355,7 @@ public class Signature implements Serializable {
                                         List argArr = (List)arg;
                                         if (argArr.size() > 0) {
                                             var itemType = getSymbol(argArr.get(0));
-                                            if (!itemType.equals(""+param.subtype.charAt(0))) { // TODO recurse further
+                                            if (!itemType.equals(String.valueOf(param.subtype.charAt(0)))) { // TODO recurse further
                                                 arrayOK = false;
                                             } else {
                                                 // make sure every item in the array is this type
