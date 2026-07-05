@@ -1489,7 +1489,7 @@ public class Jsonata {
             return result;
         };
 
-        return new JFunction(transformer, "<(oa):o>");
+        return new JFunction("transformer", transformer, "<(oa):o>");
     }
  
     static Symbol chainAST; // = new Parser().parse("function($f, $g) { function($x){ $g($f($x)) } }");
@@ -2049,34 +2049,34 @@ public class Jsonata {
     }
 
     public static<A,B,R> JFunction function(String name, FnVarArgs<R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,R> JFunction function(String name, Fn0<R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,R> JFunction function(String name, Fn1<A,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,R> JFunction function(String name, Fn2<A,B,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,C,R> JFunction function(String name, Fn3<A,B,C,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,C,D,R> JFunction function(String name, Fn4<A,B,C,D,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,C,D,E,R> JFunction function(String name, Fn5<A,B,C,D,E,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,C,D,E,F,R> JFunction function(String name, Fn6<A,B,C,D,E,F,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,C,D,E,F,G,R> JFunction function(String name, Fn7<A,B,C,D,E,F,G,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
     public static<A,B,C,D,E,F,G,H,R> JFunction function(String name, Fn8<A,B,C,D,E,F,G,H,R> func, String signature) {
-        return new JFunction(func.getJFunctionCallable(), signature);
+        return new JFunction(name, func.getJFunctionCallable(), signature);
     }
 
      /**
@@ -2238,7 +2238,7 @@ public class Jsonata {
             this.numberOfArgs = numberOfArgs;
             if (signature!=null)
                 // use classname as default, gets overwritten once the function is registered
-                this.signature = new Signature(signature, function.getClass().getName());
+                this.signature = new Signature(signature, functionName + " (" + function.getClass().getName() + ")");
         }
 
         public JFunction(String functionName, String signature, Class clz, Object instance, String implMethodName) {
