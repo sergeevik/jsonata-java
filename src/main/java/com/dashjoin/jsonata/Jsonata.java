@@ -46,6 +46,8 @@ import com.dashjoin.jsonata.Parser.Infix;
 import com.dashjoin.jsonata.Parser.Symbol;
 import com.dashjoin.jsonata.Utils.JList;
 import com.dashjoin.jsonata.utils.Signature;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * @module JSONata
@@ -53,6 +55,8 @@ import com.dashjoin.jsonata.utils.Signature;
  */
 @SuppressWarnings({"rawtypes", "unchecked"})
 public class Jsonata {
+
+    private static final Logger log = LoggerFactory.getLogger(Jsonata.class);
  
      // Start of Evaluator code
  
@@ -151,7 +155,7 @@ public class Jsonata {
         this.input = input;
         this.environment = environment;
 
-        if (parser.dbg) System.out.println("eval expr="+expr+" type="+expr.type);//+" input="+input);
+        log.debug("eval expr={} type={}", expr, expr.type);//+" input="+input);
 
         var entryCallback = environment.lookup("__evaluate_entry");
         if(entryCallback!=null) {
@@ -171,7 +175,7 @@ public class Jsonata {
                 break;
             case "name":
                 result = evaluateName(expr, input, environment);
-                if (parser.dbg) System.out.println("evalName "+result);
+                log.debug("evalName {}");
                 break;
             case "string":
             case "number":
@@ -677,7 +681,7 @@ public class Jsonata {
             if(expr.consarray) {
                 if (!(result instanceof JList))
                     result = new JList((List)result);
-                //System.out.println("const "+result);
+                //log.info("const {}", result);
                 ((JList)result).cons = true; 
             }
             break;
@@ -838,7 +842,7 @@ public class Jsonata {
             return null;
         }
 
-        //System.out.println("op22 "+op+" "+_lhs+" "+_rhs);
+        //log.info("op22 {} {} {}", op, _lhs, _rhs);
         double lhs = ((Number)_lhs).doubleValue();
         double rhs = ((Number)_rhs).doubleValue();
 
@@ -1304,7 +1308,7 @@ public class Jsonata {
             result = input instanceof JList && ((JList)input).outerWrapper ? ((JList)input).get(0) : input;
         } else  {
             result = environment.lookup((String)expr.value);
-            if (parser.dbg) System.out.println("variable name="+expr.value+" val="+result);
+            log.debug("variable name={} val={}", expr.value, result);
         }
         return result;
     }
@@ -1758,7 +1762,7 @@ public class Jsonata {
                 //      result = /* await */ result;
                 //  }
              } else if (proc instanceof JLambda) {
-                // System.err.println("Lambda "+proc);
+                // log.error("Lambda {}", proc);
                 List _args = (List)validatedArgs;
                 if (proc instanceof Fn0) {
                     result = ((Fn0)proc).get();
@@ -1770,7 +1774,7 @@ public class Jsonata {
              } else if (proc instanceof Pattern) {
                 List _res = new ArrayList<>();
                 for (Object s : (List)validatedArgs) {
-                //System.err.println("PAT "+proc+" input "+s);
+                //log.error("PAT {} input {}", proc, s);
                     if (s instanceof String) {
                         Matcher matcher = ((Pattern) proc).matcher((String) s);
                         _res.add(regexClosure(matcher));
@@ -1782,7 +1786,7 @@ public class Jsonata {
                     result = _res;
                 }
              } else {
-                System.out.println("Proc not found "+proc);
+                log.warn("Proc not found {}", proc);
                  throw new JException(
                      "T1006", 0
                      //stack: (new Error()).stack
@@ -1994,7 +1998,7 @@ public class Jsonata {
         var body = "function(" + String.join(", ", sigArgs) + "){";
         body += "$"+_native.functionName+"("+String.join(", ", sigArgs) + ") }";
 
-        if (parser.dbg) System.out.println("partial trampoline = "+body);
+        log.debug("partial trampoline = {}", body);
 
         //  var sigArgs = getNativeFunctionArguments(_native);
         //  sigArgs = sigArgs.stream().map(sigArg -> {
@@ -2248,7 +2252,7 @@ public class Jsonata {
             this.method = Functions.getFunction(clz, implMethodName);
             this.methodInstance = instance;
             if (method==null) {
-                System.err.println("Function not implemented: "+functionName+" impl="+implMethodName);
+                log.error("Function not implemented: {} impl={}", functionName, implMethodName);
             }
         }
 
