@@ -83,6 +83,9 @@ static HashMap<String, String> escapes = new HashMap<String, String>() {{
     put("t", "\t");
 }};
 
+// number literal (compiled once, matched with lookingAt() at the current position)
+static final Pattern numregex = Pattern.compile("-?(0|([1-9][0-9]*))(\\.[0-9]+)?([Ee][-+]?[0-9]+)?");
+
 // Tokenizer (lexer) - invoked by the parser to return one token at a time
     String path;
     int position = 0;
@@ -296,9 +299,9 @@ static HashMap<String, String> escapes = new HashMap<String, String>() {{
             throw new JException("S0101", position);
         }
         // test for numbers
-        Pattern numregex = Pattern.compile("^-?(0|([1-9][0-9]*))(\\.[0-9]+)?([Ee][-+]?[0-9]+)?");
-        Matcher match = numregex.matcher(path.substring(position));
-        if (match.find()) {
+        // match at the current position (region + lookingAt: no copy of the remaining source)
+        Matcher match = numregex.matcher(path).region(position, length);
+        if (match.lookingAt()) {
             double num = Double.parseDouble(match.group(0));
             if (!Double.isNaN(num) && Double.isFinite(num)) {
                 position += match.group(0).length();

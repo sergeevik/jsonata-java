@@ -53,6 +53,7 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.RandomAccess;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -222,6 +223,8 @@ public class Functions {
         }
 
         if (arg instanceof Map) {
+            // the indentation is only used when prettifying: build it once per container, not per entry
+            final String childIndent = prettify ? indent + "  " : indent;
             b.append('{');
             if (prettify)
                 b.append('\n');
@@ -240,10 +243,10 @@ public class Functions {
                 if (v instanceof String || v instanceof Symbol
                         || v instanceof JFunction) {
                     b.append('"');
-                    string(b, v, prettify, indent + "  ");
+                    string(b, v, prettify, childIndent);
                     b.append('"');
                 } else
-                    string(b, v, prettify, indent + "  ");
+                    string(b, v, prettify, childIndent);
                 b.append(',');
                 if (prettify)
                     b.append('\n');
@@ -260,6 +263,7 @@ public class Functions {
             if (((List) arg).isEmpty()) {
                 b.append("[]"); return;
             }
+            final String childIndent = prettify ? indent + "  " : indent;
             b.append('[');
             if (prettify)
                 b.append('\n');
@@ -270,10 +274,10 @@ public class Functions {
                 }
                 if (v instanceof String || v instanceof Symbol || v instanceof JFunction) {
                     b.append('"');
-                    string(b, v, prettify, indent + "  ");
+                    string(b, v, prettify, childIndent);
                     b.append('"');
                 } else
-                    string(b, v, prettify, indent + "  ");
+                    string(b, v, prettify, childIndent);
                 b.append(',');
                 if (prettify)
                     b.append('\n');
@@ -299,45 +303,37 @@ public class Functions {
      * @return
      */
     public static void validateInput(Object arg) {
-        // if (arg == null)
-        //   return null;
-        
-        if (arg==null || arg == Jsonata.NULL_VALUE) {
-            return;
-        }
-        
-        if (arg instanceof JFunction) {
-            return;
-        }
-      
-        if (arg instanceof Symbol) {
-            return;
-        }
+        // Note: this walks the complete input on every evaluation.
+        // The most frequent types are checked first.
 
-        if (arg instanceof Double) {
-            return;
-        }
-
-        if (arg instanceof Number || arg instanceof Boolean) {
-            return;
-        }
-        
-        if (arg instanceof String) {
+        if (arg==null || arg instanceof String || arg instanceof Number || arg instanceof Boolean) {
             return;
         }
 
         if (arg instanceof Map) {
-            for (Entry<String, Object> e : ((Map<String, Object>) arg).entrySet()) {
-                validateInput(e.getKey());
+            for (Entry<Object, Object> e : ((Map<Object, Object>) arg).entrySet()) {
+                Object key = e.getKey();
+                if (!(key instanceof String))
+                    validateInput(key);
                 validateInput(e.getValue());
             }
             return;
         }
 
         if ((arg instanceof List)) {
-            for (Object v : (List) arg) {
-                validateInput(v);
+            if (arg instanceof RandomAccess) {
+                List list = (List) arg;
+                for (int i = 0, n = list.size(); i < n; i++)
+                    validateInput(list.get(i));
+            } else {
+                for (Object v : (List) arg) {
+                    validateInput(v);
+                }
             }
+            return;
+        }
+
+        if (arg == Jsonata.NULL_VALUE || arg instanceof JFunction || arg instanceof Symbol) {
             return;
         }
 
@@ -398,7 +394,8 @@ public class Functions {
         // below has to convert start and length for emojis and unicode
         int origLen = str.length();
 
-        String strData = Objects.requireNonNull(str).intern();
+        // note: no intern() - interning every input string is slow and fills the JVM string table
+        String strData = Objects.requireNonNull(str);
         int strLen = strData.codePointCount(0, strData.length());
         if (start >= strLen) {
             return "";
@@ -596,11 +593,8 @@ public class Functions {
             padStr = " ";
         }
 
-        String strData = Objects.requireNonNull(str).intern();
-        int strLen = strData.codePointCount(0, strData.length());
-
-        String padData = Objects.requireNonNull(padStr).intern();
-        int padLen = padData.codePointCount(0, padData.length());
+        int strLen = str.codePointCount(0, str.length());
+        int padLen = padStr.codePointCount(0, padStr.length());
 
         if (padLen == 0) {
             padStr = " ";
@@ -609,11 +603,7 @@ public class Functions {
         if (pads <= 0) {
             return str;
         }
-        String padding = "";
-        for (int i = 0; i < pads + 1; i++) {
-            padding += padStr;
-        }
-        return substr(padding, 0, pads).concat(str);
+        return substr(padStr.repeat(pads + 1), 0, pads).concat(str);
     }
 
     // Source: Jsonata4Java PadFunction
@@ -625,11 +615,8 @@ public class Functions {
             padStr = " ";
         }
 
-        String strData = Objects.requireNonNull(str).intern();
-        int strLen = strData.codePointCount(0, strData.length());
-
-        String padData = Objects.requireNonNull(padStr).intern();
-        int padLen = padData.codePointCount(0, padData.length());
+        int strLen = str.codePointCount(0, str.length());
+        int padLen = padStr.codePointCount(0, padStr.length());
 
         if (padLen == 0) {
             padStr = " ";
@@ -638,11 +625,7 @@ public class Functions {
         if (pads <= 0) {
             return str;
         }
-        String padding = "";
-        for (int i = 0; i < pads + 1; i++) {
-            padding += padStr;
-        }
-        return str.concat(substr(padding, 0, pads));
+        return str.concat(substr(padStr.repeat(pads + 1), 0, pads));
     }
 
     static class RegexpMatch {
@@ -1484,8 +1467,13 @@ public class Functions {
             if (l.size() == 1) {
                 result = Boolean.TRUE.equals(toBoolean(l.get(0)));
             } else if (l.size() > 1) {
-                long truesLength = l.stream().filter(e -> Jsonata.boolize(e)).count();
-                result = truesLength > 0;
+                // true if any element is truthy
+                for (Object e : l) {
+                    if (Jsonata.boolize(e)) {
+                        result = true;
+                        break;
+                    }
+                }
             }
         } else if (arg instanceof String) {
             String s = (String)arg;
@@ -1953,35 +1941,53 @@ public class Functions {
         List result = new ArrayList<>(arr);
 
         if (comparator != null) {
-            Comparator comp = new Comparator() {
-
-                @Override
-                public int compare(Object o1, Object o2) {
-                    try {
-                        Boolean swap = toBoolean(funcApply(comparator, Arrays.asList(o1, o2)));
-                        if (swap == null)
-                          return 0;
-                        if (swap)
-                          return 1;
-                        else
-                          return -1;
-                    } catch (Throwable e) {
-                        // TODO Auto-generated catch block
-                        //e.printStackTrace();
-                        throw new RuntimeException(e);
-                    }
-                }
-                
-            };
             if (comparator instanceof Comparator)
               result.sort((Comparator)comparator);
             else
-              result.sort((Comparator)comp);
+              // A JSONata comparator returns true if a and b must be swapped. This is not a Comparator
+              // (equal elements give -1 in both directions), and List.sort() throws
+              // "Comparison method violates its general contract!" for larger arrays.
+              // Use a stable merge sort like jsonata-js instead.
+              result = mergeSort(result, comparator);
         } else {
             result.sort(null);
         }
 
         return result;
+    }
+
+    /**
+     * Stable merge sort with a JSONata comparator function (same algorithm as jsonata-js):
+     * the right element is taken first if comparator(left, right) is true
+     */
+    static List mergeSort(List arr, Object comparator) {
+        Object[] a = arr.toArray();
+        Object[] tmp = new Object[a.length];
+        mergeSort(a, tmp, 0, a.length, comparator);
+        return new ArrayList<>(Arrays.asList(a));
+    }
+
+    private static void mergeSort(Object[] a, Object[] tmp, int from, int to, Object comparator) {
+        if (to - from <= 1)
+            return;
+        int middle = from + (to - from) / 2;
+        mergeSort(a, tmp, from, middle, comparator);
+        mergeSort(a, tmp, middle, to, comparator);
+        int l = from, r = middle, k = from;
+        while (l < middle && r < to) {
+            boolean swap;
+            try {
+                swap = Boolean.TRUE.equals(toBoolean(funcApply(comparator, Arrays.asList(a[l], a[r]))));
+            } catch (Throwable e) {
+                throw new RuntimeException(e);
+            }
+            tmp[k++] = swap ? a[r++] : a[l++];
+        }
+        while (l < middle)
+            tmp[k++] = a[l++];
+        while (r < to)
+            tmp[k++] = a[r++];
+        System.arraycopy(tmp, from, a, from, to - from);
     }
 
     /**
@@ -2085,21 +2091,23 @@ public class Functions {
             return arg1;
         }
 
-        // if either argument is not an array, make it so
-        if (!(arg1 instanceof List)) {
-            arg1 = Utils.createSequence(arg1);
-        }
-        if (!(arg2 instanceof List)) {
-            arg2 = new JList<>(Arrays.asList(arg2));
-        }
-
         // Shortcut:
-        if (((List)arg1).isEmpty() && (arg2 instanceof Utils.RangeList))
+        if ((arg1 instanceof List) && ((List)arg1).isEmpty() && (arg2 instanceof Utils.RangeList))
             return arg2;
 
-        arg1 = new JList<>((List)arg1); // create a new copy!
-        ((List)arg1).addAll((List)arg2);
-        return arg1;
+        // create a new copy! (if either argument is not an array, treat it as a singleton array)
+        int size1 = arg1 instanceof List ? ((List)arg1).size() : 1;
+        int size2 = arg2 instanceof List ? ((List)arg2).size() : 1;
+        JList result = new JList<>(size1 + size2);
+        if (arg1 instanceof List)
+            result.addAll((List)arg1);
+        else
+            result.add(arg1);
+        if (arg2 instanceof List)
+            result.addAll((List)arg2);
+        else
+            result.add(arg2);
+        return result;
     }
 
     public static boolean isLambda(Object result) {
@@ -2160,35 +2168,37 @@ public class Functions {
     }
 
     public static Object call(Object instance, Method m, List<Object> args) throws Throwable {
-        Class<?>[] types = m.getParameterTypes();
-        int nargs = m.getParameterTypes().length;
+        return call(instance, m, m.getParameterTypes(), args);
+    }
 
-        List<Object> callArgs = new ArrayList<>(args);
-        while (callArgs.size()<nargs) {
+    /**
+     * @param types the parameter types of m (Method.getParameterTypes() returns a new array on every call,
+     *              so callers should cache them)
+     */
+    static Object call(Object instance, Method m, Class<?>[] types, List<Object> args) throws Throwable {
+        int nargs = types.length;
+
+        Object[] callArgs;
+        if (nargs==1 && types[0]==JList.class) {
+            // If the function receives the args as JList:
+            // i.e. a varargs fn like zip can use this
+            callArgs = new Object[] { new JList(args) };
+        } else {
             // Add default arg null if not enough args were provided
-            callArgs.add(null);
-        }
+            callArgs = new Object[Math.max(nargs, args.size())];
+            for (int i = 0; i < args.size(); i++)
+                callArgs[i] = args.get(i);
 
-        // Special handling of one arg if function requires list:
-        // Wrap the single arg (if != null) in a list with one element
-        if (nargs>0 && List.class.isAssignableFrom(types[0]) && !(callArgs.get(0) instanceof List)) {
-            Object arg1 = callArgs.get(0);
-            if (arg1!=null) {
-                List wrap = new ArrayList<>(); wrap.add(arg1);
-                callArgs.set(0, wrap);            
-            //log.error("wrapped {} as {}"+, arg1, wrap);
+            // Special handling of one arg if function requires list:
+            // Wrap the single arg (if != null) in a list with one element
+            if (nargs>0 && callArgs[0]!=null && !(callArgs[0] instanceof List) && List.class.isAssignableFrom(types[0])) {
+                List wrap = new ArrayList<>(1); wrap.add(callArgs[0]);
+                callArgs[0] = wrap;
             }
         }
 
-        // If the function receives the args as JList:
-        // i.e. a varargs fn like zip can use this
-        if (nargs==1 && types[0]==JList.class) {
-            JList allArgs = new JList(args);
-            callArgs = List.of(allArgs);
-        }
-        
         try {
-            Object res = m.invoke(null, callArgs.toArray());
+            Object res = m.invoke(instance, callArgs);
             if (res instanceof Number)
                 res = Utils.convertNumber((Number)res);
             return res;
@@ -2360,8 +2370,51 @@ public class Functions {
             return null;
         }
 
-        Object res = Json.parseJson(string(arg, false));
-        return res;
+        // Direct deep copy, same result as the JSON round trip Json.parseJson(string(arg, false))
+        // without serializing and parsing the whole structure
+        if (arg instanceof JFunction || arg instanceof Symbol) {
+            // string() yields "" for a function, which is not valid JSON
+            return Json.parseJson(string(arg, false));
+        }
+        return cloneJson(arg);
+    }
+
+    /**
+     * Deep copy with the semantics of a JSON round trip via string() + Json.parseJson()
+     */
+    static Object cloneJson(Object arg) {
+        if (arg == null || arg == Jsonata.NULL_VALUE)
+            return null;
+        if (arg instanceof String || arg instanceof Boolean)
+            return arg;
+        if (arg instanceof Double) {
+            double d = (Double) arg;
+            if (d % 1 == 0 && Long.MIN_VALUE < d && d <= Long.MAX_VALUE)
+                return Utils.convertNumber((double) Math.round(d));
+            // string() rounds to 15 significant digits
+            return Utils.convertNumber(Double.parseDouble(new BigDecimal(d, new MathContext(15)).toString()));
+        }
+        if (arg instanceof Integer)
+            return arg;
+        if (arg instanceof Number)
+            return Utils.convertNumber(Double.parseDouble(arg.toString()));
+        if (arg instanceof JFunction || arg instanceof Symbol)
+            return ""; // string() renders functions as "" inside objects / arrays
+        if (arg instanceof Map) {
+            Map<String, Object> map = (Map<String, Object>) arg;
+            var res = new LinkedHashMap<String, Object>(Math.max(16, (int) (map.size() / .75f) + 1));
+            for (Entry<String, Object> e : map.entrySet())
+                res.put(e.getKey(), cloneJson(e.getValue()));
+            return res;
+        }
+        if (arg instanceof List) {
+            List list = (List) arg;
+            var res = new ArrayList<>(list.size());
+            for (Object o : list)
+                res.add(cloneJson(o));
+            return res;
+        }
+        throw new IllegalArgumentException("Only JSON types (values, Map, List) can be stringified. Unsupported type: "+arg.getClass().getName());
     }
 
     /**

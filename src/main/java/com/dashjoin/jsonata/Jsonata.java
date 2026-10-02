@@ -27,6 +27,8 @@ package com.dashjoin.jsonata;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -69,18 +71,55 @@ public class Jsonata {
     }
 
     public static class Frame {
-        final Map<String, Object> bindings = new LinkedHashMap<String,Object>();
+        /** Marker for "not bound" (a bound null must be returned as null) */
+        private static final Object UNBOUND = new Object();
+
+        /**
+         * Own bindings. Most frames (blocks, lambda calls) bind few or no variables:
+         * up to SMALL_MAX bindings are kept in two small arrays (allocated on first bind, linear search),
+         * larger frames (e.g. the frame with the built-in functions) switch to a hash map.
+         */
+        private String[] names;
+        private Object[] values;
+        private int size;
+        private HashMap<String, Object> bindings;
+        private static final int SMALL_MAX = 8;
+
+        /** Read-only tuple stream bindings, consulted after own bindings (avoids copying the tuple) */
+        final Map<String, Object> tuple;
 
         final Frame parent;
 
         public boolean isParallelCall;
 
+        /**
+         * Evaluation callbacks, inherited from the enclosing frame at creation time.
+         * Saves two frame chain lookups per evaluated AST node.
+         */
+        EntryCallback entryCallback;
+        ExitCallback exitCallback;
+
         public Frame(Frame enclosingEnvironment) {
+            this(enclosingEnvironment, null);
+        }
+
+        Frame(Frame enclosingEnvironment, Map<String, Object> tuple) {
             parent = enclosingEnvironment;
+            this.tuple = tuple;
+            if (enclosingEnvironment != null) {
+                entryCallback = enclosingEnvironment.entryCallback;
+                exitCallback = enclosingEnvironment.exitCallback;
+            }
         }
 
         public void bind(String name, Object val) {
-            bindings.put(name, val);
+            put(name, val);
+            if (name.startsWith("__evaluate_")) {
+                if (name.equals("__evaluate_entry"))
+                    entryCallback = val instanceof EntryCallback ? (EntryCallback) val : null;
+                else if (name.equals("__evaluate_exit"))
+                    exitCallback = val instanceof ExitCallback ? (ExitCallback) val : null;
+            }
         }
 
         public void bind(String name, JFunction function) { 
@@ -93,13 +132,73 @@ public class Jsonata {
         public<A,R> void bind(String name, Fn1<A,R> lambda) { bind(name, (Object)lambda); }
         public<A,B,R> void bind(String name, Fn2<A,B,R> lambda) { bind(name, (Object)lambda); }
 
+        private void put(String name, Object val) {
+            if (bindings != null) {
+                bindings.put(name, val);
+                return;
+            }
+            for (int i = 0; i < size; i++) {
+                if (names[i].equals(name)) {
+                    values[i] = val;
+                    return;
+                }
+            }
+            if (names == null) {
+                names = new String[2];
+                values = new Object[2];
+            } else if (size == names.length) {
+                if (size >= SMALL_MAX) {
+                    bindings = new HashMap<>();
+                    for (int i = 0; i < size; i++)
+                        bindings.put(names[i], values[i]);
+                    bindings.put(name, val);
+                    names = null;
+                    values = null;
+                    size = 0;
+                    return;
+                }
+                names = Arrays.copyOf(names, size * 2);
+                values = Arrays.copyOf(values, size * 2);
+            }
+            names[size] = name;
+            values[size++] = val;
+        }
+
+        /** Own binding of name, or UNBOUND */
+        private Object get(String name) {
+            if (bindings != null)
+                return bindings.getOrDefault(name, UNBOUND);
+            for (int i = 0; i < size; i++) {
+                if (names[i].equals(name))
+                    return values[i];
+            }
+            return UNBOUND;
+        }
+
+        /** Copies the own bindings of this frame into the target frame */
+        void copyBindingsTo(Frame target) {
+            if (bindings != null) {
+                for (var e : bindings.entrySet())
+                    target.bind(e.getKey(), e.getValue());
+            } else {
+                for (int i = 0; i < size; i++)
+                    target.bind(names[i], values[i]);
+            }
+        }
+
         public Object lookup(String name) {
             // Important: if we have a null value,
             // return it
-            if (bindings.containsKey(name))
-                return bindings.get(name);
-            if (parent!=null)
-                return parent.lookup(name);
+            for (Frame f = this; f != null; f = f.parent) {
+                Object v = f.get(name);
+                if (v != UNBOUND)
+                    return v;
+                if (f.tuple != null) {
+                    v = f.tuple.getOrDefault(name, UNBOUND);
+                    if (v != UNBOUND)
+                        return v;
+                }
+            }
             return null;
         }
 
@@ -133,17 +232,17 @@ public class Jsonata {
      */
     Object evaluate(Symbol expr, Object input, Frame environment) {
         // Thread safety:
-        // Make sure each evaluate is executed on an instance per thread
-        Jsonata _this = getPerThreadInstance();
+        // the evaluator runs on a per evaluation context instance (see evaluate(Object, Frame)),
+        // so no thread local lookup is required here.
         // Save and restore the evaluation context so that nested
-        // evaluations (e.g. $eval()) see the correct context.        
-        Object _input = _this.input;
-        Frame _environment = _this.environment;
+        // evaluations (e.g. $eval()) see the correct context.
+        Object _input = this.input;
+        Frame _environment = this.environment;
         try {
-          return _this._evaluate(expr, input, environment);
+          return _evaluate(expr, input, environment);
         } finally {
-            _this.input = _input;
-            _this.environment = _environment;
+            this.input = _input;
+            this.environment = _environment;
         }
     }
 
@@ -155,13 +254,13 @@ public class Jsonata {
         this.input = input;
         this.environment = environment;
 
-        log.debug("eval expr={} type={}", expr, expr.type);//+" input="+input);
+        // Note: no logging here, this is the hottest method of the evaluator
 
-        var entryCallback = environment.lookup("__evaluate_entry");
+        var entryCallback = environment.entryCallback;
         if(entryCallback!=null) {
-            ((EntryCallback)entryCallback).callback(expr, input, environment);
+            entryCallback.callback(expr, input, environment);
         }
- 
+
         if (expr.type!=null)
         switch (expr.type) {
             case "path":
@@ -175,7 +274,6 @@ public class Jsonata {
                 break;
             case "name":
                 result = evaluateName(expr, input, environment);
-                log.debug("evalName {}");
                 break;
             case "string":
             case "number":
@@ -232,9 +330,9 @@ public class Jsonata {
             result = /* await */ evaluateGroupExpression(expr.group, result, environment);
         }
  
-        var exitCallback = environment.lookup("__evaluate_exit");
+        var exitCallback = environment.exitCallback;
         if(exitCallback!=null) {
-            ((ExitCallback)exitCallback).callback(expr, input, environment, result);
+            exitCallback.callback(expr, input, environment, result);
         }
         
         // mangle result (list of 1 element -> 1 element, empty list -> null)
@@ -338,11 +436,9 @@ public class Jsonata {
     }
  
     Frame createFrameFromTuple(Frame environment, Map<String, Object> tuple) {
-        var frame = createFrame(environment);
-        if (tuple!=null) for (var prop : tuple.keySet()) {
-            frame.bind(prop, tuple.get(prop));
-        }
-        return frame;
+        // The frame reads the tuple bindings directly instead of copying them into its own map.
+        // Tuples are not modified while frames created from them are in use.
+        return new Frame(environment, tuple);
     }
  
     /**
@@ -363,37 +459,48 @@ public class Jsonata {
             return result;
         }
 
-        result = Utils.createSequence();
-
-        for(var ii = 0; ii < ((List)input).size(); ii++) {
-            var res = /* await */ evaluate(expr, ((List)input).get(ii), environment);
+        // Results are flattened into the result sequence on the fly (no intermediate list).
+        // Only the first result is held back: if it is the only one and this is the last step,
+        // an array result must be returned as is (not flattened).
+        List inputList = (List)input;
+        var resultSequence = Utils.createSequence();
+        Object first = null;
+        int count = 0;
+        for(var ii = 0; ii < inputList.size(); ii++) {
+            var res = /* await */ evaluate(expr, inputList.get(ii), environment);
             if(expr.stages!=null) {
                 for(var ss = 0; ss < expr.stages.size(); ss++) {
                     res = /* await */ evaluateFilter(expr.stages.get(ss).expr, res, environment);
                 }
             }
             if(res != null) {
-                ((List) result).add(res);
-            }
-        }
-
-        var resultSequence = Utils.createSequence();
-        if(lastStep && ((List)result).size()==1 && (((List)result).get(0) instanceof List) && !Utils.isSequence(((List)result).get(0))) {
-            resultSequence = (List) ((List) result).get(0);
-        } else {
-            // flatten the sequence
-            for (Object res : (List)result) {
-                if (!(res instanceof List) || (res instanceof JList && ((JList)res).cons)) {
-                    // it's not an array - just push into the result sequence
-                    resultSequence.add(res);
+                count++;
+                if (count == 1) {
+                    first = res;
                 } else {
-                    // res is a sequence - flatten it into the parent sequence
-                    resultSequence.addAll((List)res);
+                    if (count == 2)
+                        flattenInto(resultSequence, first);
+                    flattenInto(resultSequence, res);
                 }
             }
         }
 
+        if (count == 1) {
+            if (lastStep && (first instanceof List) && !Utils.isSequence(first))
+                return first;
+            flattenInto(resultSequence, first);
+        }
         return resultSequence;
+    }
+
+    static void flattenInto(List resultSequence, Object res) {
+        if (!(res instanceof List) || (res instanceof JList && ((JList)res).cons)) {
+            // it's not an array - just push into the result sequence
+            resultSequence.add(res);
+        } else {
+            // res is a sequence - flatten it into the parent sequence
+            resultSequence.addAll((List)res);
+        }
     }
  
     /* async */ Object evaluateStages(List<Symbol> stages, Object input, Frame environment) {
@@ -407,7 +514,7 @@ public class Jsonata {
                 case "index":
                     for(var ee = 0; ee < ((List)result).size(); ee++) {
                         var tuple = ((List)result).get(ee);
-                        ((Map)tuple).put(""+stage.value, ee);
+                        ((Map)tuple).put(str(stage.value), ee);
                     }
                     break;
             }
@@ -572,7 +679,7 @@ public class Jsonata {
     Infix expr = (Infix)_expr;
         Object result = null;
         var lhs = /* await */ evaluate(expr.lhs, input, environment);
-        String op = ""+expr.value;
+        String op = str(expr.value);
 
         if (op.equals("and") || op.equals("or")) {
 
@@ -646,7 +753,7 @@ public class Jsonata {
     /* async */ Object evaluateUnary(Symbol expr, Object input, Frame environment) {
         Object result = null;
 
-        switch ((String)""+expr.value) { // Uli was: expr.value - where is value set???
+        switch (str(expr.value)) { // Uli was: expr.value - where is value set???
             case "-":
                 result = /* await */ evaluate(expr.expression, input, environment);
                 if (result==null) { //(typeof result === "undefined") {
@@ -665,19 +772,22 @@ public class Jsonata {
                 break;
             case "[":
             // array constructor - evaluate each item
-            result = new JList<>(); // [];
+            // (the Appender owns the new list, so items are appended in place instead of copying the list each time)
+            var acc = new Utils.Appender(new JList<>()); // [];
+            acc.owned = true;
             int idx = 0;
             for (var item : expr.expressions) {
                 environment.isParallelCall = idx > 0;
                 Object value = evaluate(item, input, environment);
                 if (value!=null) {
-                    if ((""+item.value).equals("["))
-                        ((List)result).add(value);
+                    if (isValue(item.value, "["))
+                        ((List)acc.value).add(value);
                     else
-                        result = Functions.append(result, value);
+                        acc.append(value);
                 }
                 idx++;
             }
+            result = acc.value;
             if(expr.consarray) {
                 if (!(result instanceof JList))
                     result = new JList((List)result);
@@ -722,35 +832,32 @@ public class Jsonata {
     * @returns {*} Evaluated input data
     */
     Object evaluateWildcard(Symbol expr, Object input) {
-        var results = Utils.createSequence();
+        var results = new Utils.Appender(Utils.createSequence());
         if ((input instanceof JList) && ((JList)input).outerWrapper && ((JList)input).size() > 0) {
             input = ((JList)input).get(0);
         }
         if (input != null && input instanceof Map) { // typeof input === "object") {
-        for (Object key : ((Map)input).keySet()) {
-        // Object.keys(input).forEach(Object (key) {
-                var value = ((Map)input).get(key);
-                if((value instanceof List)) {
-                    value = flatten(value, null);
-                    results = (List)Functions.append(results, value);
-                } else {
-                    results.add(value);
-                }
+            for (Object value : ((Map)input).values()) {
+                wildcardValue(results, value);
             }
         } else if (input instanceof List) {
             // Java: need to handle List separately
             for (Object value : ((List)input)) {
-                if((value instanceof List)) {
-                    value = flatten(value, null);
-                    results = (List)Functions.append(results, value);
-                } else {
-                    results.add(value);
-                }
+                wildcardValue(results, value);
             }
         }
 
         // result = normalizeSequence(results);
-        return results;
+        return results.value;
+    }
+
+    private void wildcardValue(Utils.Appender results, Object value) {
+        if((value instanceof List)) {
+            // note: append copies the (shared) initial sequence once, then appends in place
+            results.append(flatten(value, null));
+        } else {
+            ((List)results.value).add(value);
+        }
     }
 
     /**
@@ -842,7 +949,6 @@ public class Jsonata {
             return null;
         }
 
-        //log.info("op22 {} {} {}", op, _lhs, _rhs);
         double lhs = ((Number)_lhs).doubleValue();
         double rhs = ((Number)_rhs).doubleValue();
 
@@ -874,34 +980,34 @@ public class Jsonata {
       * @returns {*} Result
       */
     Object evaluateEqualityExpression(Object lhs, Object rhs, String op) {
-        Object result = null;
-
-        // type checks
-        var ltype = lhs!=null ? lhs.getClass().getSimpleName() : null;
-        var rtype = rhs!=null ? rhs.getClass().getSimpleName() : null;
-
-        if (ltype == null || rtype == null) {
+        if (lhs == null || rhs == null) {
             // if either side is undefined, the result is false
             return false;
         }
 
-        // JSON might come with integers,
-        // convert all to double...
-        // FIXME: semantically OK?
-        if (lhs instanceof Number)
-            lhs = ((Number)lhs).doubleValue();
-        if (rhs instanceof Number)
-            rhs = ((Number)rhs).doubleValue();
+        boolean equal = isEqual(lhs, rhs);
 
         switch (op) {
             case "=":
-                result = lhs.equals(rhs); // isDeepEqual(lhs, rhs);
-                break;
+                return equal; // isDeepEqual(lhs, rhs);
             case "!=":
-                result = !lhs.equals(rhs); // !isDeepEqual(lhs, rhs);
-                break;
+                return !equal; // !isDeepEqual(lhs, rhs);
         }
-        return result;
+        return null;
+    }
+
+    /**
+     * JSON might come with integers, so numbers are compared by their double value.
+     * Same result as Double.valueOf(lhs).equals(Double.valueOf(rhs)), without boxing.
+     */
+    static boolean isEqual(Object lhs, Object rhs) {
+        if (lhs instanceof Number) {
+            return rhs instanceof Number && Double.doubleToLongBits(((Number)lhs).doubleValue())
+                == Double.doubleToLongBits(((Number)rhs).doubleValue());
+        }
+        if (rhs instanceof Number)
+            return false;
+        return lhs.equals(rhs);
     }
  
      /**
@@ -988,13 +1094,13 @@ public class Jsonata {
         }
 
         if(!(rhs instanceof List)) {
-            var _rhs = new ArrayList<>(); _rhs.add(rhs);
-            rhs = _rhs;
+            return isEqual(lhs, rhs);
         }
 
-        for(var i = 0; i < ((List)rhs).size(); i++) {
-            Object tmp = evaluateEqualityExpression(lhs, ((List)rhs).get(i), "=");
-            if (Boolean.TRUE.equals(tmp)) {
+        List _rhs = (List)rhs;
+        for(var i = 0; i < _rhs.size(); i++) {
+            Object item = _rhs.get(i);
+            if (item != null && isEqual(lhs, item)) {
                 result = true;
                 break;
             }
@@ -1053,9 +1159,12 @@ public class Jsonata {
         return result;
     }
  
-    static class GroupEntry {
-        Object data;
-        int exprIndex;
+    static class GroupEntry extends Utils.Appender {
+        final int exprIndex;
+        GroupEntry(Object data, int exprIndex) {
+            super(data);
+            this.exprIndex = exprIndex;
+        }
     }
      
     /**
@@ -1076,8 +1185,9 @@ public class Jsonata {
         List input = (List)_input;
 
         // if the array is empty, add an undefined entry to enable literal JSON object to be generated
+        // (without modifying the input list, which might belong to the caller)
         if (input.isEmpty()) {
-            input.add(null);
+            input = Collections.singletonList(null);
         }
 
         for(var itemIndex = 0; itemIndex < input.size(); itemIndex++) {
@@ -1096,11 +1206,10 @@ public class Jsonata {
                 }
 
                 if (key != null) {
-                    var entry = new GroupEntry();
-                    entry.data = item; entry.exprIndex = pairIndex;
-                    if (groups.get(key)!=null) {
+                    var entry = groups.get(key);
+                    if (entry!=null) {
                         // a value already exists in this slot
-                        if(groups.get(key).exprIndex != pairIndex) {
+                        if(entry.exprIndex != pairIndex) {
                             // this key has been generated by another expression in this group
                             // when multiple key expressions evaluate to the same key, then error D1009 must be thrown
                             throw new JException("D1009",
@@ -1110,10 +1219,10 @@ public class Jsonata {
                             );
                         }
 
-                        // append it as an array
-                        groups.get(key).data = Functions.append(groups.get(key).data, item);
+                        // append it as an array (in place after the first copy, avoids O(n^2) copying)
+                        entry.append(item);
                     } else {
-                        groups.put(key, entry);
+                        groups.put(key, new GroupEntry(item, pairIndex));
                     }
                 }
             }
@@ -1124,10 +1233,10 @@ public class Jsonata {
         int idx = 0;
         for (Entry<Object,GroupEntry> e : groups.entrySet()) {
             var entry = e.getValue();
-            var context = entry.data;
+            var context = entry.value;
             var env = environment;
             if (reduce) {
-                var tuple = reduceTupleStream(entry.data);
+                var tuple = reduceTupleStream(entry.value);
                 context = ((Map)tuple).get("@");
                 ((Map)tuple).remove("@");
                 env = createFrameFromTuple(environment, (Map)tuple);
@@ -1157,22 +1266,29 @@ public class Jsonata {
         }
         List<Map> tupleStream = (List)_tupleStream;
 
-        var result = new LinkedHashMap<>();
-        result.putAll(tupleStream.get(0));
+        // Accumulate per property (in place after the first copy, avoids O(n^2) copying)
+        var acc = new LinkedHashMap<Object, Utils.Appender>();
+        for (Object o : tupleStream.get(0).entrySet()) {
+            Entry e = (Entry)o;
+            acc.put(e.getKey(), new Utils.Appender(e.getValue()));
+        }
 
         //Object.assign(result, tupleStream[0]);
         for(var ii = 1; ii < tupleStream.size(); ii++) {
-
-        Map el = tupleStream.get(ii);
-        for (var prop : el.keySet()) {
-
+            Map<Object,Object> el = tupleStream.get(ii);
+            for (var e : el.entrySet()) {
 //             for(const prop in tupleStream[ii]) {
-
-            result.put(prop, Functions.append(result.get(prop), el.get(prop)));
-
 //               result[prop] = fn.append(result[prop], tupleStream[ii][prop]);
+                var a = acc.get(e.getKey());
+                if (a == null)
+                    acc.put(e.getKey(), a = new Utils.Appender(null));
+                a.append(e.getValue());
             }
         }
+
+        var result = new LinkedHashMap<>(acc.size() * 2);
+        for (var e : acc.entrySet())
+            result.put(e.getKey(), e.getValue().value);
         return result;
     }
 
@@ -1238,7 +1354,7 @@ public class Jsonata {
         // The RHS is the expression to evaluate
         // The LHS is the name of the variable to bind to - should be a VARIABLE token (enforced by parser)
         var value = /* await */ evaluate(expr.rhs, input, environment);
-        environment.bind(""+expr.lhs.value, value);
+        environment.bind(str(expr.lhs.value), value);
         return value;
     }
  
@@ -1308,11 +1424,29 @@ public class Jsonata {
             result = input instanceof JList && ((JList)input).outerWrapper ? ((JList)input).get(0) : input;
         } else  {
             result = environment.lookup((String)expr.value);
-            log.debug("variable name={} val={}", expr.value, result);
         }
         return result;
     }
+
+    /**
+     * Checks a symbol value (which may be a String or a Character) without creating a String
+     */
+    static boolean isValue(Object value, String s) {
+        if (value instanceof String)
+            return value.equals(s);
+        return value != null && s.equals(value.toString());
+    }
+
+    /**
+     * String value of a symbol value. Unlike ""+value, this does not create a new String
+     * (string concatenation always creates a new object, which then also has to recompute its hash code).
+     */
+    static String str(Object value) {
+        return value instanceof String ? (String) value : String.valueOf(value);
+    }
  
+    private static final Object NOT_EVALUATED = new Object();
+
      /**
       * sort / order-by operator
       * @param {Object} expr - AST for operator
@@ -1327,35 +1461,53 @@ public class Jsonata {
         var lhs = (List)input;
         var isTupleSort = (input instanceof JList && ((JList)input).tupleStream) ? true : false;
 
+        if (lhs == null || lhs.size() <= 1)
+            return lhs; // nothing to sort (same as Functions.sort)
+
+        // Each sort term is evaluated at most once per element (lazily, so terms that are not
+        // needed to break a tie are never evaluated). The original approach evaluated both
+        // terms in every comparison, i.e. O(n log n) evaluations instead of O(n).
+        final int nterms = expr.terms.size();
+        final class SortItem {
+            final Object item;
+            Object[] keys;
+            SortItem(Object item) { this.item = item; }
+            Object key(int index) {
+                if (keys == null) {
+                    keys = new Object[nterms];
+                    Arrays.fill(keys, NOT_EVALUATED);
+                }
+                Object k = keys[index];
+                if (k == NOT_EVALUATED) {
+                    var context = item;
+                    var env = environment;
+                    if(isTupleSort) {
+                        context = ((Map)item).get("@");
+                        env = createFrameFromTuple(environment, (Map)item);
+                    }
+                    k = keys[index] = /* await */ evaluate(expr.terms.get(index).expression, context, env);
+                }
+                return k;
+            }
+        }
+
         // sort the lhs array
         // use comparator function
-        var comparator = new Comparator() { 
+        var comparator = new Comparator<SortItem>() {
 
         @Override
-        public int compare(Object a, Object b) {
+        public int compare(SortItem a, SortItem b) {
 
             // expr.terms is an array of order-by in priority order
             var comp = 0;
-            for(var index = 0; comp == 0 && index < expr.terms.size(); index++) {
+            for(var index = 0; comp == 0 && index < nterms; index++) {
                 var term = expr.terms.get(index);
                 //evaluate the sort term in the context of a
-                var context = a;
-                var env = environment;
-                if(isTupleSort) {
-                    context = ((Map)a).get("@");
-                    env = createFrameFromTuple(environment, (Map)a);
-                }
-                Object aa = /* await */ evaluate(term.expression, context, env);
+                Object aa = a.key(index);
 
                  //evaluate the sort term in the context of b
-                 context = b;
-                 env = environment;
-                 if(isTupleSort) {
-                     context = ((Map)b).get("@");
-                     env = createFrameFromTuple(environment, (Map)b);
-                 }
-                 Object bb = /* await */ evaluate(term.expression, context, env);
- 
+                 Object bb = b.key(index);
+
                 // type checks
                 //  var atype = typeof aa;
                 //  var btype = typeof bb;
@@ -1421,9 +1573,16 @@ public class Jsonata {
         //  };
         //  // the `focus` is passed in as the `this` for the invoked function
         //  result = /* await */ fn.sort.apply(focus, [lhs, comparator]);
- 
-        result = Functions.sort(lhs, comparator);
-        return result;        
+
+        var items = new ArrayList<SortItem>(lhs.size());
+        for (Object item : lhs)
+            items.add(new SortItem(item));
+        items.sort(comparator); // stable, like Functions.sort
+        var sorted = new ArrayList<>(items.size());
+        for (var item : items)
+            sorted.add(item.item);
+        result = sorted;
+        return result;
     }
  
      /**
@@ -1568,28 +1727,12 @@ public class Jsonata {
         return Utils.isFunction(o) || Functions.isLambda(o) || (o instanceof Pattern);
     }
      
-    final static ThreadLocal<Jsonata> current = new ThreadLocal<>();
-
     /**
-     * Returns a per thread instance of this parsed expression.
-     * 
-     * @return
+     * The evaluation context of the evaluation running on this thread (if any).
+     * Used by functions that need the context ($eval, $now, $millis, higher order functions).
+     * Set by evaluate(Object, Frame) for the duration of the evaluation.
      */
-    Jsonata getPerThreadInstance() {
-        Jsonata threadInst = current.get();
-        // Fast path
-        if (threadInst!=null)
-            return threadInst;
-
-        synchronized(this) {
-            threadInst = current.get();
-            if (threadInst==null) {
-                threadInst = new Jsonata(this);
-                current.set(threadInst);
-            }
-            return threadInst;
-        }
-    }
+    final static ThreadLocal<Jsonata> current = new ThreadLocal<>();
 
      /**
       * Evaluate Object against input data
@@ -1828,7 +1971,7 @@ public class Jsonata {
       */
     Object evaluateLambda(Symbol expr, Object input, Frame environment) {
         // make a Object (closure)
-        var procedure = parser.new Symbol();
+        var procedure = getParser().new Symbol();
         
         procedure._jsonata_lambda = true;
         procedure.input = input;
@@ -1923,7 +2066,7 @@ public class Jsonata {
         var env = createFrame(proc.environment);
         for (int i=0; i<proc.arguments.size(); i++) {
             if (i>=args.size()) break;
-            env.bind(""+proc.arguments.get(i).value, args.get(i));
+            env.bind(str(proc.arguments.get(i).value), args.get(i));
         }
         if (proc.body instanceof Symbol) {
             result = evaluate(proc.body, proc.input, env);
@@ -1960,7 +2103,7 @@ public class Jsonata {
             env.bind((String)param.value, arg);
             index++;
         }
-        var procedure = parser.new Symbol();
+        var procedure = getParser().new Symbol();
         procedure._jsonata_lambda = true;
         procedure.input = proc.input;
         procedure.environment = env;
@@ -2006,7 +2149,7 @@ public class Jsonata {
         //  }).toList();
         //  var body = "function(" + String.join(", ", sigArgs) + "){ _ }";
 
-        var bodyAST = parser.parse(body);
+        var bodyAST = getParser().parse(body);
         //bodyAST.body = _native;
 
         var partial = partialApplyProcedure(bodyAST, (List)args);
@@ -2226,6 +2369,8 @@ public class Jsonata {
         String functionName;
         Signature signature;
         Method method;
+        /** cached method.getParameterTypes() (the getter clones the array on every call) */
+        Class<?>[] parameterTypes;
         Object methodInstance;
         int numberOfArgs;
 
@@ -2253,6 +2398,8 @@ public class Jsonata {
             this.methodInstance = instance;
             if (method==null) {
                 log.error("Function not implemented: {} impl={}", functionName, implMethodName);
+            } else {
+                this.parameterTypes = method.getParameterTypes();
             }
         }
 
@@ -2262,7 +2409,7 @@ public class Jsonata {
                 if (function!=null) {
                     return function.call(input, args);
                 } else {
-                    return Functions.call(methodInstance, method, args);
+                    return Functions.call(methodInstance, method, parameterTypes, args);
                 }
             } catch (JException e) {
                 throw e;
@@ -2285,7 +2432,7 @@ public class Jsonata {
         }
 
         public int getNumberOfArgs() {
-            return method != null ? method.getParameterTypes().length : numberOfArgs;
+            return method != null ? parameterTypes.length : numberOfArgs;
         }
     }
 
@@ -2506,7 +2653,14 @@ public class Jsonata {
      }
  
     List<Exception> errors;
+    /** Environment of the current evaluation (set by _evaluate, read by $eval and partial application) */
     Frame environment;
+    /**
+     * Root environment of this compiled expression (variables / functions registered via assign / registerFunction).
+     * Unlike {@link #environment}, it is not modified during evaluation, so concurrent evaluations
+     * always start from the same frame.
+     */
+    Frame globalEnvironment;
     Symbol ast;
     long timestamp;
     Object input;
@@ -2532,7 +2686,7 @@ public class Jsonata {
      */
     Jsonata(String expr) { // boolean optionsRecover) {
         try {
-            ast = parser.parse(expr);//, optionsRecover);
+            ast = getParser().parse(expr);//, optionsRecover);
             errors = ast.errors;
             ast.errors = null; //delete ast.errors;
         } catch(JException err) {
@@ -2540,7 +2694,7 @@ public class Jsonata {
             //populateMessage(err); // possible side-effects on `err`
             throw err;
         }
-        environment = createFrame(staticFrame);
+        environment = globalEnvironment = createFrame(staticFrame);
 
         timestamp = System.currentTimeMillis(); // will be overridden on each call to evalute()
 
@@ -2559,19 +2713,18 @@ public class Jsonata {
         //      jsonata.RegexEngine = RegExp;
         //  }
 
-        // Set instance for this thread
-        current.set(this);
+        // Note: the evaluation context is created per evaluate() call (see evaluate(Object, Frame))
     }
 
     /**
      * Creates a clone of the given Jsonata instance.
-     * Package-private copy constructor used to create per thread instances.
-     * 
+     * Package-private copy constructor used to create the per evaluation context.
+     *
      * @param other
      */
     Jsonata(Jsonata other) {
         this.ast = other.ast;
-        this.environment = other.environment;
+        this.environment = this.globalEnvironment = other.globalEnvironment;
         this.timestamp = other.timestamp;
     }
 
@@ -2636,23 +2789,25 @@ public class Jsonata {
             throw new JException("S0500", 0);
         }
 
-        Frame exec_env;
+        // Always evaluate in a new frame: binding "$" (and top level variables) into the shared
+        // environment of this compiled expression is a data race when the instance is used by
+        // several threads, and keeps the last input document reachable after evaluation.
+        Frame exec_env = createFrame(globalEnvironment);
         if (bindings != null) {
-            //var exec_env;
-            // the variable bindings have been passed in - create a frame to hold these
-            exec_env = createFrame(environment);
-            for (var v : bindings.bindings.keySet()) {
-                exec_env.bind(v, bindings.lookup(v));
-            }
-        } else {
-            exec_env = environment;
+            // the variable bindings have been passed in - copy them into the new frame
+            bindings.copyBindingsTo(exec_env);
         }
         // put the input document into the environment as the root object
         exec_env.bind("$", input);
 
+        // The evaluation runs on a context object owned by this call: it holds the mutable evaluation
+        // state (current input / environment, timestamp), so concurrent evaluations of this
+        // compiled expression don't interfere, and no thread local lookup is needed per AST node.
+        Jsonata ctx = new Jsonata(this);
+
         // capture the timestamp and put it in the execution environment
         // the $now() and $millis() functions will return this value - whenever it is called
-        timestamp = System.currentTimeMillis();
+        ctx.timestamp = System.currentTimeMillis();
         //exec_env.timestamp = timestamp;
 
         // if the input is a JSON array, then wrap it in a singleton sequence so it gets treated as a single input
@@ -2665,8 +2820,11 @@ public class Jsonata {
             Functions.validateInput(input);
 
         Object it;
+        // Functions ($eval, $now, HOFs) access the context via the thread local
+        Jsonata outer = current.get(); // non null for nested evaluations, e.g. from a custom function
+        current.set(ctx);
         try {
-            it = /* await */ evaluate(ast, input, exec_env);
+            it = /* await */ ctx.evaluate(ast, input, exec_env);
         //  if (typeof callback === "function") {
         //      callback(null, it);
         //  }
@@ -2677,40 +2835,43 @@ public class Jsonata {
             // insert error message into structure
             populateMessage(err); // possible side-effects on `err`
             throw err;
+        } finally {
+            // don't keep the context (and with it the input document) reachable from pooled threads
+            if (outer == null)
+                current.remove();
+            else
+                current.set(outer);
         }
     }
 
     public void assign(String name, Object value) {
-        environment.bind(name, value);
+        globalEnvironment.bind(name, value);
     }
-    
+
     public void registerFunction(String name, JFunction implementation) {
-        environment.bind(name, implementation);
+        globalEnvironment.bind(name, implementation);
     }
 
     public<R> void registerFunction(String name, Fn0<R> implementation) {
-      environment.bind(name, implementation);
+      globalEnvironment.bind(name, implementation);
   }
 
     public<A,R> void registerFunction(String name, Fn1<A,R> implementation) {
-      environment.bind(name, implementation);
+      globalEnvironment.bind(name, implementation);
   }
 
     public<A,B,R> void registerFunction(String name, Fn2<A,B,R> implementation) {
-      environment.bind(name, implementation);
+      globalEnvironment.bind(name, implementation);
   }
 
     public List<Exception> getErrors() {
         return errors;
     }
 
-    final static ThreadLocal<Parser> _parser = new ThreadLocal<>();
-    final static synchronized Parser getParser() {
-        Parser p = _parser.get();
-        if (p!=null)
-            return p;
-        _parser.set(p = new Parser());
-        return p;
+    // The parser is not thread safe: one instance per thread
+    // (no synchronization needed, the thread local is per thread already)
+    final static ThreadLocal<Parser> _parser = ThreadLocal.withInitial(Parser::new);
+    final static Parser getParser() {
+        return _parser.get();
     }
-    final Parser parser = getParser();
 }

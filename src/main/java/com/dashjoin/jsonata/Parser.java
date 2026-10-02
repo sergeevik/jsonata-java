@@ -283,7 +283,6 @@ public class Parser implements Serializable {
                 return handleError(err);
             }
             Token next_token = lexer.next(infix);
-            log.debug("nextToken {}", next_token!=null ? next_token.type : null);
             if (next_token == null) {
                 node = symbolTable.get("(end)");
                 node.position = source.length();
@@ -324,7 +323,6 @@ public class Parser implements Serializable {
             node.value = value;
             node.type = type;
             node.position = next_token.position;
-            log.debug("advance {}", node);
             return node;
         }
 
@@ -337,7 +335,6 @@ public class Parser implements Serializable {
             while (rbp < node.lbp) {
                 t = node;
                 advance(null, false);
-                log.debug("t={}, left={}", t, left.type);
                 left = t.led(left);
             }
             return left;
@@ -1221,7 +1218,9 @@ public class Parser implements Serializable {
                         break;                    
                     default:
                         Infix _result = new Infix(null);
-                        _result.type = expr.type; _result.value = expr.value; _result.position = expr.position;
+                        // operator as String (the tokenizer creates Characters for single char operators),
+                        // so the evaluator does not need to convert it on every evaluation
+                        _result.type = expr.type; _result.value = String.valueOf(expr.value); _result.position = expr.position;
                         _result.lhs = processAST((expr).lhs);
                         _result.rhs = processAST((expr).rhs);
                         pushAncestry(_result, _result.lhs);
@@ -1233,10 +1232,10 @@ public class Parser implements Serializable {
             }
 
             case "unary": {
+                // expr.value might be Character! Store it as String for the evaluator
+                String exprValue = String.valueOf(expr.value);
                 result = new Symbol();
-                result.type = expr.type; result.value = expr.value; result.position = expr.position;
-                // expr.value might be Character!
-                String exprValue = ""+expr.value;
+                result.type = expr.type; result.value = exprValue; result.position = expr.position;
                 if (exprValue.equals("[")) {
                     log.debug("unary [ {}", result);
                     // array constructor - process each item
@@ -1439,6 +1438,12 @@ public class Parser implements Serializable {
 
     public Symbol parse(String jsonata) {
         source = jsonata;
+        // The parser instance is reused (per thread): reset per-parse state.
+        // Otherwise the ancestry list grows with every parsed expression using the parent operator.
+        // ancestorLabel is not reset: labels stay unique across expressions ($eval)
+        ancestry = new ArrayList<>();
+        ancestorIndex = 0;
+        errors = new ArrayList<>();
 
         // now invoke the tokenizer and the parser and return the syntax tree
         lexer = new Tokenizer(source);

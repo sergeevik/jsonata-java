@@ -77,11 +77,16 @@ public class Utils {
     public static List<Object> createSequence() { return createSequence(NONE); }
 
     public static List<Object> createSequence(Object el) {
-        JList<Object> sequence = new JList<>();
-        sequence.sequence = true;
-        if (el!=NONE) {
-            sequence.add(el);
+        if (el==NONE) {
+            JList<Object> sequence = new JList<>();
+            sequence.sequence = true;
+            return sequence;
         }
+        // singleton sequences (wrapped inputs / values) usually stay singletons:
+        // avoid the default capacity of 10
+        JList<Object> sequence = new JList<>(1);
+        sequence.sequence = true;
+        sequence.add(el);
         return sequence;
     }
 
@@ -139,17 +144,12 @@ public class Utils {
         @Override
         public Number get(int index) {
             if (index < size) {
-                try {
-                    return Utils.convertNumber( a + index );
-                } catch (JException e) {
-                    // TODO Auto-generated catch block
-                    e.printStackTrace();
-                }
+                return Utils.convertNumber( a + index );
             }
             throw new IndexOutOfBoundsException(index);
-        }        
+        }
     }
-     
+
     public static Number convertNumber(Number n) {
         // Use long if the number is not fractional
         if (!isNumeric(n)) return null;
@@ -161,6 +161,69 @@ public class Utils {
                 return l;
         }
         return n.doubleValue();
+    }
+
+    /**
+     * Same as {@link #convertNumber(Number)} for a primitive double,
+     * avoids boxing the intermediate result of arithmetic operations.
+     */
+    public static Number convertNumber(double d) {
+        if (Double.isNaN(d)) return null;
+        if (Double.isInfinite(d)) throw new JException("D1001", 0, d);
+        long l = (long) d;
+        if (l == d) {
+            if (((int)l)==l)
+                return (int)l;
+            else
+                return l;
+        }
+        return d;
+    }
+
+    /**
+     * Same as {@link #convertNumber(Number)} for a primitive long (exact, no detour via double)
+     */
+    public static Number convertNumber(long l) {
+        if (((int)l)==l)
+            return (int)l;
+        return l;
+    }
+
+    /**
+     * Accumulates values with the semantics of repeated {@code value = Functions.append(value, v)} calls.
+     * Functions.append always copies its first argument, so appending n items in a loop is O(n^2).
+     * Once the accumulator holds a list created by append (i.e. a private copy nobody else references),
+     * further items are appended in place.
+     */
+    static class Appender {
+        Object value;
+        boolean owned;
+
+        Appender(Object initial) {
+            value = initial;
+        }
+
+        void append(Object v) {
+            if (owned) {
+                if (v == null)
+                    return;
+                JList acc = (JList) value;
+                if (acc.isEmpty() && v instanceof RangeList) {
+                    // Functions.append shortcut: returns the range itself
+                    value = v;
+                    owned = false;
+                } else if (v instanceof List) {
+                    acc.addAll((List) v);
+                } else {
+                    acc.add(v);
+                }
+            } else {
+                Object prev = value;
+                value = Functions.append(prev, v);
+                // append returns one of its arguments, or a fresh copy
+                owned = value != prev && value != v;
+            }
+        }
     }
 
     public static void checkUrl(String str) {

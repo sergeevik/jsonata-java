@@ -41,10 +41,13 @@
 
 package com.dashjoin.jsonata.utils;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -62,13 +65,16 @@ public class Signature implements Serializable {
 
     private static final long serialVersionUID = -450755246855587271L;
 
-    static class Param {
+    static class Param implements Serializable {
+        private static final long serialVersionUID = 1L;
         String type;
         String regex;
         boolean context;
         boolean array;
         String subtype;
         String contextRegex;
+        /** contextAccepts[c]: the context value with type symbol c can be used for this param (precomputed regex test) */
+        boolean[] contextAccepts;
 
         @Override
         public String toString() {
@@ -84,13 +90,47 @@ public class Signature implements Serializable {
     String _signature = "";
     String functionName;
 
+    /**
+     * Regex match results by supplied signature (e.g. "sn" -> groups "s","n").
+     * The alphabet of type symbols is small, so a function sees very few distinct supplied signatures.
+     * Shared by all Signature instances with the same signature string.
+     */
+    transient Map<String, String[]> _matchCache = new ConcurrentHashMap<>();
+    static final int MATCH_CACHE_MAX = 256;
+
+    /**
+     * Parsed signatures by signature string (parsing compiles a regex).
+     * Signatures are immutable once parsed (except the function name), so the parsed state is shared.
+     */
+    static final Map<String, Signature> PARSED = new ConcurrentHashMap<>();
+    static final int PARSED_MAX = 1024;
+
+    /** All symbols returned by getSymbol */
+    static final String SYMBOLS = "asnblfom";
+
     public Signature(String signature, String function) {
         this.functionName = function;
-        parseSignature(signature);
+        Signature parsed = PARSED.get(signature);
+        if (parsed != null) {
+            _params = parsed._params;
+            _regex = parsed._regex;
+            _signature = parsed._signature;
+            _matchCache = parsed._matchCache;
+            _param = _prevParam = null; // only used while parsing
+        } else {
+            parseSignature(signature);
+            if (PARSED.size() < PARSED_MAX)
+                PARSED.putIfAbsent(signature, this);
+        }
     }
     
     public void setFunctionName(String functionName) {
         this.functionName = functionName;
+    }
+
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        _matchCache = new ConcurrentHashMap<>();
     }
 
     public static void main(String[] args) {
@@ -120,28 +160,32 @@ public class Signature implements Serializable {
     };
 
     String getSymbol(Object value) {
-        String symbol;
+        return String.valueOf(getSymbolChar(value));
+    }
+
+    char getSymbolChar(Object value) {
+        char symbol;
         if (value == null) {
-            symbol = "m";
+            symbol = 'm';
         } else {
             // first check to see if this is a function
             if (Utils.isFunction(value) || Functions.isLambda(value) || (value instanceof Pattern)) { //} instanceof JFunction || value instanceof Function) {
-                symbol = "f";
+                symbol = 'f';
             } else if (value instanceof String)
-                symbol = "s";
+                symbol = 's';
             else if (value instanceof Number)
-                symbol = "n";
+                symbol = 'n';
             else if (value instanceof Boolean)
-                symbol = "b";
+                symbol = 'b';
             else if (value instanceof List)
-                symbol = "a";
+                symbol = 'a';
             else if (value instanceof Map)
-                symbol = "o";
+                symbol = 'o';
             else if (value instanceof NullType) // Uli: is this used???
-                 symbol = "l";
+                 symbol = 'l';
             else
                 // any value can be undefined, but should be allowed to match
-                symbol = "m"; // m for missing
+                symbol = 'm'; // m for missing
         }
         return symbol;
     };
@@ -268,10 +312,38 @@ public class Signature implements Serializable {
         try {
             _regex = Pattern.compile(regexStr);
             _signature = regexStr;
+            // precompute which context value types are acceptable
+            // (instead of compiling the param regex on every function call)
+            for (Param param : _params) {
+                if (param.context && param.regex != null) {
+                    Pattern p = Pattern.compile(param.regex);
+                    param.contextAccepts = new boolean[128];
+                    for (char c : SYMBOLS.toCharArray())
+                        param.contextAccepts[c] = p.matcher(String.valueOf(c)).matches();
+                }
+            }
         } catch (PatternSyntaxException pse) {
             throw new RuntimeException(pse.getLocalizedMessage());
         }
         return _regex;
+    }
+
+    /**
+     * Returns the regex groups (one per param) matched by the supplied signature, or null if it doesn't match
+     */
+    String[] match(String suppliedSig) {
+        String[] groups = _matchCache.get(suppliedSig);
+        if (groups == null) {
+            Matcher isValid = _regex.matcher(suppliedSig);
+            if (!isValid.matches())
+                return null;
+            groups = new String[_params.size()];
+            for (int i = 0; i < groups.length; i++)
+                groups[i] = isValid.group(i + 1);
+            if (_matchCache.size() < MATCH_CACHE_MAX)
+                _matchCache.put(suppliedSig, groups);
+        }
+        return groups;
     }
 
     void throwValidationError(List<?> badArgs, String badSig, String functionName) {
@@ -298,29 +370,28 @@ public class Signature implements Serializable {
     @SuppressWarnings({"rawtypes", "unchecked"})
     public Object validate(Object _args, Object context) {
 
-        var result = new ArrayList<>();
-
         var args = (List)_args;
-        String suppliedSig = "";
-        for (Object arg : args)
-            suppliedSig += getSymbol(arg);
-        
-        Matcher isValid = _regex.matcher(suppliedSig);
-        if (isValid != null && isValid.matches()) {
-            var validatedArgs = new ArrayList<>();
+        char[] sig = new char[args.size()];
+        for (int i = 0; i < sig.length; i++)
+            sig[i] = getSymbolChar(args.get(i));
+        String suppliedSig = new String(sig);
+
+        String[] groups = match(suppliedSig);
+        if (groups != null) {
+            var validatedArgs = new ArrayList<>(Math.max(_params.size(), args.size()));
             var argIndex = 0;
             int index = 0;
             for (Object _param : _params) {
                 Param param = (Param)_param;
                 var arg = argIndex<args.size() ? args.get(argIndex) : null;
-                String match = isValid.group(index + 1);
+                String match = groups[index];
                 if ("".equals(match)) {
                     if (param.context && param.regex!=null) {
                         // substitute context value for missing arg
                         // first check that the context value is the right type
-                        var contextType = getSymbol(context);
+                        var contextType = getSymbolChar(context);
                         // test contextType against the regex for this arg (without the trailing ?)
-                        if (Pattern.matches(param.regex, contextType)) {
+                        if (param.contextAccepts[contextType]) {
                         //if (param.contextRegex.test(contextType)) {
                             validatedArgs.add(context);
                         } else {
@@ -337,11 +408,12 @@ public class Signature implements Serializable {
                 } else {
                     // may have matched multiple args (if the regex ends with a '+'
                     // split into single tokens
-                    String[] singles = match.split("");
-                    for (String single : singles) {
+                    boolean isArrayParam = param.type.equals("a");
+                    for (int s = 0; s < match.length(); s++) {
+                        char single = match.charAt(s);
                     //match.split('').forEach(function (single) {
-                        if (param.type.equals("a")) {
-                            if (single.equals("m")) {
+                        if (isArrayParam) {
+                            if (single == 'm') {
                                 // missing (undefined)
                                 arg = null;
                             } else {
@@ -349,18 +421,18 @@ public class Signature implements Serializable {
                                 var arrayOK = true;
                                 // is there type information on the contents of the array?
                                 if (param.subtype != null) {
-                                    if (!single.equals("a") && !match.equals(param.subtype)) {
+                                    if (single != 'a' && !match.equals(param.subtype)) {
                                         arrayOK = false;
-                                    } else if (single.equals("a")) {
+                                    } else if (single == 'a') {
                                         List argArr = (List)arg;
                                         if (argArr.size() > 0) {
-                                            var itemType = getSymbol(argArr.get(0));
-                                            if (!itemType.equals(""+param.subtype.charAt(0))) { // TODO recurse further
+                                            var itemType = getSymbolChar(argArr.get(0));
+                                            if (itemType != param.subtype.charAt(0)) { // TODO recurse further
                                                 arrayOK = false;
                                             } else {
                                                 // make sure every item in the array is this type
                                                 for (Object o : argArr) {
-                                                    if (!getSymbol(o).equals(itemType)) {
+                                                    if (getSymbolChar(o) != itemType) {
                                                         arrayOK = false;
                                                         break;
                                                     }
@@ -377,7 +449,7 @@ public class Signature implements Serializable {
                                     );
                                 }
                                 // the function expects an array. If it's not one, make it so
-                                if (!single.equals("a")) {
+                                if (single != 'a') {
                                     List _arg = new ArrayList<>(); _arg.add(arg);
                                     arg = _arg;
                                 }
